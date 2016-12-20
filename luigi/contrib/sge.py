@@ -142,12 +142,19 @@ def _parse_qsub_job_id(qsub_out):
     return int(qsub_out.split()[2])
 
 
-def _build_qsub_command(cmd, job_name, outfile, errfile, pe, n_cpu):
+def _build_qsub_command(cmd, job_name, outfile, errfile, pe, n_cpu, mem=None, time=None):
     """Submit shell command to SGE queue via `qsub`"""
-    qsub_template = """echo {cmd} | qsub -o ":{outfile}" -e ":{errfile}" -V -r y -pe {pe} {n_cpu} -N {job_name}"""
-    return qsub_template.format(
-        cmd=cmd, job_name=job_name, outfile=outfile, errfile=errfile,
-        pe=pe, n_cpu=n_cpu)
+    if mem:
+        qsub_template = """echo {cmd} | qsub -o ":{outfile}" -e ":{errfile}" -l mem={mem}G,time={time} -V -r y -pe {pe} {n_cpu} -N {job_name}"""
+        qsub_template = qsub_template.format(
+            cmd=cmd, job_name=job_name, outfile=outfile, errfile=errfile,
+            pe=pe, n_cpu=n_cpu, mem=mem, time=time)
+    else:
+        qsub_template = """echo {cmd} | qsub -o ":{outfile}" -e ":{errfile}" -V -r y -pe {pe} {n_cpu} -N {job_name}"""
+        qsub_template = qsub_template.format(
+            cmd=cmd, job_name=job_name, outfile=outfile, errfile=errfile,
+            pe=pe, n_cpu=n_cpu)
+    return qsub_template
 
 
 class SGEJobTask(luigi.Task):
@@ -202,6 +209,13 @@ class SGEJobTask(luigi.Task):
     no_tarball = luigi.BoolParameter(
         significant=False,
         description="don't tarball (and extract) the luigi project files")
+    mem = luigi.Parameter(
+        significant=False, default=None,
+        description="memory limit, per core (at least in smp parallel_env)")
+    time = luigi.Parameter(
+        significant=False, default=None,
+        description="time limit, format as hh:mm:ss, 3hrs = 03::"
+    )
 
     def __init__(self, *args, **kwargs):
         super(SGEJobTask, self).__init__(*args, **kwargs)
@@ -220,7 +234,7 @@ class SGEJobTask(luigi.Task):
         if not os.path.exists(self.errfile):
             logger.info('No error file')
             return []
-        with open(self.errfile, "r") as f:
+        with open(self.errfile, "rb") as f:
             errors = f.readlines()
         if errors == []:
             return errors
@@ -278,9 +292,9 @@ class SGEJobTask(luigi.Task):
                 d = pickle.dumps(self)
                 module_name = os.path.basename(sys.argv[0]).rsplit('.', 1)[0]
                 d = d.replace('(c__main__', "(c" + module_name)
-                open(self.job_file, "w").write(d)
+                open(self.job_file, "wb").write(d)
             else:
-                pickle.dump(self, open(self.job_file, "w"))
+                pickle.dump(self, open(self.job_file, "wb"))
 
     def _run_job(self):
 
@@ -297,7 +311,8 @@ class SGEJobTask(luigi.Task):
         self.outfile = os.path.join(self.tmp_dir, 'job.out')
         self.errfile = os.path.join(self.tmp_dir, 'job.err')
         submit_cmd = _build_qsub_command(job_str, self.task_family, self.outfile,
-                                         self.errfile, self.parallel_env, self.n_cpu)
+                                         self.errfile, self.parallel_env, self.n_cpu,
+                                         mem=self.mem, time=self.time)
         logger.debug('qsub command: \n' + submit_cmd)
 
         # Submit the job and grab job ID
